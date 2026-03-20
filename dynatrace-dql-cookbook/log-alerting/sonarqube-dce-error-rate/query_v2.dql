@@ -7,9 +7,15 @@
 // PURPOSE: This is the PHASE 1 fix — query-level optimisation.
 // It addresses all four anti-patterns from query_v1.dql.
 //
-// Estimated DDU reduction vs v1: 35–45%
-// (Phase 2 — Log Metric architecture — reduces a further 60–80%
-//  on top. See log_metric_config.md for the full architecture fix.)
+// Estimated query cost reduction vs v1: 35–45% per evaluation cycle
+// (Each cycle still scans GiB × rate — the scan loop remains.)
+//
+// Phase 2 — Log Metric architecture — eliminates the scan loop
+// entirely. Log Metrics are billed for Ingest & Process only;
+// Query is NOT billed. Estimated total saving: 65–75%.
+// Source: docs.dynatrace.com/docs/license/capabilities/metrics/
+//         dps-metrics-query
+// See log_metric_config.md for the full architecture fix.
 //
 // REPLACE: <MY-CLUSTER-NAME>     with your cluster name
 //          <MY-NAMESPACE>        with your target namespace
@@ -17,8 +23,12 @@
 // ============================================================
 
 
-// ✅ FIX 1: Hard scan limit — DDU budget guardrail
+// ✅ FIX 1: Hard scan limit — query cost guardrail
 // ─────────────────────────────────────────────────────────────
+// Default scanLimitGBytes when omitted = 500GB.
+// Setting -1 overrides even that cap — unbounded.
+// Setting 1 = hard 1GB ceiling per evaluation cycle.
+//
 // 1GB is appropriate for most Kubernetes namespace workloads
 // at 1-minute evaluation frequency with a 5-minute lookback.
 //
@@ -27,8 +37,9 @@
 // this should never trigger — if it does, the volume itself
 // is anomalous and worth investigating.
 //
-// Tune this value to: (expected log volume/min) × (lookback minutes)
+// Tune this value to: (expected log GiB/min) × (lookback minutes)
 // with a 2× safety margin.
+// Source: docs.dynatrace.com — DQL data source commands
 // ─────────────────────────────────────────────────────────────
 fetch logs, scanLimitGBytes:1
 
@@ -127,8 +138,11 @@ fetch logs, scanLimitGBytes:1
 // Namespace segmentation   | Not present     | k8s.namespace.name in by:{}
 // Null entity guard        | Not present     | isNotNull() filter
 //
-// Estimated DDU saving vs v1: 35–45%
+// Estimated query cost saving vs v1: 35–45% per cycle
+// Note: each cycle still scans GiB × rate (1,440 times/day).
+//       This query reduces the cost per scan — it does not
+//       remove the scan loop. That requires Log Metrics (Phase 2).
 //
 // For the full architecture fix (Log Metric pattern) that
-// achieves 65–75% total DDU reduction, see log_metric_config.md
+// eliminates query scan cost entirely, see log_metric_config.md
 // ============================================================

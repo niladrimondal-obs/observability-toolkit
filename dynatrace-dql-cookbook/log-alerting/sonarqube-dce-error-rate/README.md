@@ -155,7 +155,7 @@ fetch logs, scanLimitGBytes:-1
 
 | Anti-Pattern | Technical Problem | Business Cost |
 |---|---|---|
-| `scanLimitGBytes:-1` | Scans entire log store every cycle | No DDU budget control — unbounded spend |
+| `scanLimitGBytes:-1` | Scans entire log store every cycle | No query budget control — unbounded GiB scanned per cycle |
 | `matchesPhrase` on structured fields | Tokenised search on indexed attributes | 15–25% wasted compute per cycle |
 | Lookup MZ join in query | Topology join 1,440×/day | 20–30% overhead; slows evaluation latency |
 | No entity binding | Alert is orphaned from the entity model | Davis blind, MZ enforcement broken, SLA risk |

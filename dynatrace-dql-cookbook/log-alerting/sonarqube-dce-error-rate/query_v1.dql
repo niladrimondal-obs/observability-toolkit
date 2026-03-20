@@ -5,8 +5,15 @@
 // ============================================================
 //
 // PURPOSE: This is the BEFORE state. It works — but it is
-// expensive. Three compounding anti-patterns drive DDU cost
-// to 5× what it needs to be at 1-minute evaluation frequency.
+// expensive. Three compounding anti-patterns drive query cost
+// (GiB scanned × rate) to ~5× what it needs to be at
+// 1-minute evaluation frequency.
+//
+// Pricing model: Grail DPS — query cost = GiB scanned × rate card
+// Published rate: $0.0035/GiB scanned (source: dynatrace.com)
+// Log Metrics by contrast: billed for Ingest & Process only —
+// Query is NOT billed. (source: docs.dynatrace.com/docs/license/
+// capabilities/metrics/dps-metrics-query)
 //
 // DO NOT deploy this pattern in production alerting.
 // Use query_v2.dql or the Log Metric architecture instead.
@@ -126,20 +133,23 @@ fetch logs, scanLimitGBytes:-1
 // SUMMARY OF ISSUES
 // ============================================================
 //
-// Anti-Pattern          | DDU Impact
-// ──────────────────────┼────────────────────────────────────
-// scanLimitGBytes:-1    | Overrides 500GB default cap — unbounded scan
-// matchesPhrase ×3      | +15–25% overhead per cycle
-// lookup MZ join        | +20–30% overhead per cycle
-// No entity binding     | Operational failures (not DDU cost)
-// All combined @ 1min   | ~5× effective DDU vs optimal pattern
+// Anti-Pattern          | Query Cost Impact (Grail DPS)
+// ──────────────────────┼──────────────────────────────────────────
+// scanLimitGBytes:-1    | Overrides 500GB default — unbounded GiB scanned
+// matchesPhrase ×3      | +15–25% more GiB touched per cycle
+// lookup MZ join        | +20–30% cross-store overhead per cycle
+// No entity binding     | Operational failure — not a cost issue
+// All combined @ 1min   | ~5× effective query cost vs Log Metric baseline
+//                       | (Log Metric: zero query cost — Ingest & Process only)
 //
 // ADDITIONAL ALERT DQL RULES (from Dynatrace Anomaly Detection docs):
 //   • Do NOT use from: or to: in alert DQL queries — causes evaluation failures
 //   • Do NOT use sort in alert DQL — reduces performance with no benefit
 //   • Do NOT use limit — causes dimensions to appear/disappear unpredictably
 //   • interval: 1m is REQUIRED for Anomaly Detection alerts
+//   Source: docs.dynatrace.com/docs/dynatrace-intelligence/anomaly-detection/
+//           anomaly-detection-app/davis-ad-dql-best-practice
 //
-// See cost_analysis.md for full breakdown.
+// See cost_analysis.md for full breakdown with pricing model reference.
 // See query_v2.dql for the optimised version.
 // ============================================================

@@ -64,7 +64,6 @@ dynatrace-dql-cookbook/
 
 **Observability Architect & Platform Lead** — 16 years in observability and AIOps, spanning Dynatrace, Splunk, ELK, Prometheus, and OpsBridge platforms across 1,000+ enterprise customers globally.
 
-*Pattern observations are sanitised and generalised from enterprise deployments. No client-specific data.*
 
 ---
 

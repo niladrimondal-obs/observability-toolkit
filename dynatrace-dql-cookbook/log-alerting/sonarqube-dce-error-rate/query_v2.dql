@@ -1,0 +1,134 @@
+// ============================================================
+// query_v2.dql  —  OPTIMISED QUERY (Phase 1 Fix)
+// Case Study: SonarQube DCE Error Rate Alert
+// DQL Cookbook — log-alerting/sonarqube-dce-error-rate
+// ============================================================
+//
+// PURPOSE: This is the PHASE 1 fix — query-level optimisation.
+// It addresses all four anti-patterns from query_v1.dql.
+//
+// Estimated DDU reduction vs v1: 35–45%
+// (Phase 2 — Log Metric architecture — reduces a further 60–80%
+//  on top. See log_metric_config.md for the full architecture fix.)
+//
+// REPLACE: <MY-CLUSTER-NAME>     with your cluster name
+//          <MY-NAMESPACE>        with your target namespace
+//          KUBERNETES_CLUSTER-XX with your cluster entity ID
+// ============================================================
+
+
+// ✅ FIX 1: Hard scan limit — DDU budget guardrail
+// ─────────────────────────────────────────────────────────────
+// 1GB is appropriate for most Kubernetes namespace workloads
+// at 1-minute evaluation frequency with a 5-minute lookback.
+//
+// If the cap is hit, the query returns partial results and
+// logs a scanLimitReached warning. In a well-scoped alert
+// this should never trigger — if it does, the volume itself
+// is anomalous and worth investigating.
+//
+// Tune this value to: (expected log volume/min) × (lookback minutes)
+// with a 2× safety margin.
+// ─────────────────────────────────────────────────────────────
+fetch logs, scanLimitGBytes:1
+
+
+// ✅ FIX 2: Exact equality on all structured dimensional fields
+// ─────────────────────────────────────────────────────────────
+// k8s.cluster.name, k8s.container.name, and status are all
+// structured dimensional fields with Grail indexes.
+//
+// Operator reference for structured fields:
+//   ==             → exact match, case-sensitive, fastest (use this)
+//   matchesValue() → case-insensitive, supports * wildcards
+//                    use when case consistency is uncertain
+//   matchesPhrase() → phrase/word-boundary search on unstructured
+//                     content field ONLY — wrong for structured attributes
+//
+// Rule of thumb:
+//   Structured attribute with known exact value → use ==
+//   Structured attribute with wildcard/case need → use matchesValue()
+//   Unstructured log body content              → use matchesPhrase()
+// ─────────────────────────────────────────────────────────────
+| filter k8s.cluster.name == "<MY-CLUSTER-NAME>"
+    AND status == "ERROR"
+    AND (
+        k8s.container.name == "sonarqube-dce"
+        OR k8s.container.name == "sonarqube-dce-search"
+    )
+
+
+// ✅ FIX 3: Entity binding guard
+// ─────────────────────────────────────────────────────────────
+// If a log record has no entity enrichment (e.g., ingestion
+// pipeline gap, misconfigured OneAgent), dt.entity.kubernetes_cluster
+// will be null. Null values in the by:{} grouping create a
+// "null entity" dimension bucket in the timeseries — these
+// records cannot bind to any real entity and will cause the
+// alert to fire without a valid dt_source_entity.
+//
+// This filter ensures only entity-enriched records contribute
+// to the metric, keeping the timeseries clean.
+// ─────────────────────────────────────────────────────────────
+| filter isNotNull(dt.entity.kubernetes_cluster)
+
+
+// ✅ FIX 4 & 5: Entity binding + namespace segmentation
+//              + MZ enforcement moved to alert definition
+// ─────────────────────────────────────────────────────────────
+// ENTITY BINDING:
+//   dt.entity.kubernetes_cluster is added to by:{}.
+//   Its value is a valid entity ID: KUBERNETES_CLUSTER-XXXXXXXX
+//   The alert engine detects this format and auto-promotes it
+//   to dt_source_entity when the alert fires.
+//
+//   This single change enables:
+//     • Davis AI root cause correlation
+//     • Maintenance window suppression
+//     • MZ access control enforcement
+//     • Ownership routing
+//     • Entity event timeline visibility
+//
+// NAMESPACE SEGMENTATION:
+//   k8s.namespace.name added to by:{} so each namespace gets
+//   an independent signal line. If sonarqube-dce runs in
+//   multiple namespaces (e.g., acceptance, staging), each
+//   namespace fires alerts independently with its own threshold.
+//
+// MZ ENFORCEMENT:
+//   The lookup [] join from query_v1 is REMOVED entirely.
+//   Management zone scoping is configured at the alert
+//   definition level — native enforcement, zero join cost.
+//   This eliminates 1,440 cross-store topology joins per day.
+// ─────────────────────────────────────────────────────────────
+| makeTimeseries errorCount = count(),
+    time:{timestamp},
+    by:{
+        k8s.cluster.name,
+        k8s.container.name,
+        k8s.namespace.name,
+        dt.entity.kubernetes_cluster
+    },
+    interval:1m
+
+
+// ============================================================
+// WHAT CHANGED vs query_v1.dql
+// ============================================================
+//
+// Change                   | v1              | v2
+// ─────────────────────────┼─────────────────┼──────────────
+// Scan limit               | -1 (unbounded)  | 1 (1GB cap)
+// Filter: cluster name     | matchesPhrase() | == equality
+// Filter: status           | matchesPhrase() | == equality
+// Filter: container name   | matchesPhrase() | == equality
+// MZ enforcement           | lookup [] join  | Alert-level config
+// Entity binding           | Not present     | dt.entity.* in by:{}
+// Namespace segmentation   | Not present     | k8s.namespace.name in by:{}
+// Null entity guard        | Not present     | isNotNull() filter
+//
+// Estimated DDU saving vs v1: 35–45%
+//
+// For the full architecture fix (Log Metric pattern) that
+// achieves 65–75% total DDU reduction, see log_metric_config.md
+// ============================================================

@@ -1,7 +1,7 @@
 # Log Metric Configuration — Production Architecture Spec
 
 > **This is Phase 2 — the architecture fix.**
-> `query_v2.dql` reduces DDU cost by 35–45% by fixing the query.
+> `query_v2.dql` reduces query cost by 35–45% by fixing the query patterns.
 > This document eliminates the root cause: the repeated-scan execution model.
 
 ---
@@ -58,7 +58,12 @@ AFTER — Log Metric + Metric Event:
   Alert fires or clears
 ```
 
-**DDU cost for metric storage is orders of magnitude lower than repeated log scan DDUs.**
+**Log Metrics are billed for Ingest & Process only — Query is not billed.**
+
+> *"Log metrics are regular metrics that are billed for Ingest & Process (and Retain above 15 months), but not for Query."*
+> Source: [docs.dynatrace.com — Metrics powered by Grail - Query](https://docs.dynatrace.com/docs/license/capabilities/metrics/dps-metrics-query)
+
+This is not a marginal saving — it is a categorical difference. Every DQL log alert evaluation costs GiB scanned × rate. Every Log Metric alert costs nothing for evaluation — it was already computed at ingest.
 
 ---
 
@@ -212,16 +217,18 @@ The `query_v2.dql` file complies with all of these rules.
 
 | Dimension | DQL Log Alert | Log Metric + Metric Event |
 |-----------|---------------|--------------------------|
-| Scan on each evaluation | Yes — re-reads log store | **No** — metric already computed |
-| DDU cost model | Volume × frequency × lookback | Metric storage only |
-| Same record processed | ~5× per day (at 1-min/5-min) | **Once** — at ingest |
+| Scan on each evaluation | Yes — re-reads log store on every cycle | **No** — metric already computed at ingest |
+| Cost model (Grail DPS) | GiB scanned × rate × 1,440 cycles/day | **Ingest & Process only — Query not billed** |
+| Same record processed | ~5× per day (1-min eval / 5-min lookback) | **Once** — at ingest |
 | Ingest lag handling | Needs wide lookback window | Handled natively by metric pipeline |
 | Entity binding | Requires `dt.entity.*` in DQL `by:{}` | Configured as dimension on metric |
-| MZ scoping | Query-time join (expensive) | Alert-level config (free) |
-| Filter operators | Full DQL including `matchesPhrase()` | Exact equality only |
+| MZ scoping | Query-time join per cycle (expensive) | Alert-level config (free) |
+| Filter operators | Full DQL including `matchesPhrase()` | DQL Matcher syntax — `==`, `matchesValue()`, `matchesPhrase()` |
 | Use case | Exploration, ad-hoc investigation | **Production alerting — always** |
-| Baseline learning | Not available | Available (anomaly detection mode) |
-| Estimated DDU vs DQL alert | Baseline | **65–75% lower** |
+| Anomaly detection baseline | Not available | Available after ~2 weeks of data |
+| Estimated total cost vs DQL alert | Baseline | **65–75% lower overall** |
+
+> **Source:** Query cost model — [docs.dynatrace.com — LMA Query](https://docs.dynatrace.com/docs/license/capabilities/log-analytics/dps-log-query) · Log Metric billing — [docs.dynatrace.com — Metrics powered by Grail](https://docs.dynatrace.com/docs/license/capabilities/metrics/dps-metrics-query)
 
 ---
 
@@ -231,8 +238,9 @@ The `query_v2.dql` file complies with all of these rules.
 |------|---------|
 | [`query_v1.dql`](./query_v1.dql) | Original query — what we are replacing |
 | [`query_v2.dql`](./query_v2.dql) | Optimised query — Phase 1 fix (use if Log Metrics not available) |
-| [`cost_analysis.md`](./cost_analysis.md) | Full DDU modelling and scenario breakdown |
+| [`cost_analysis.md`](./cost_analysis.md) | Full cost modelling and scenario breakdown |
 
 ---
 
 *Part of the [DQL Cookbook](../../README.md)*
+*Repository: [github.com/niladrimondal-obs/observability-toolkit/tree/main/dynatrace-dql-cookbook](https://github.com/niladrimondal-obs/observability-toolkit/tree/main/dynatrace-dql-cookbook)*

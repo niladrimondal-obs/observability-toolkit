@@ -6,7 +6,9 @@
 
 ## The One-Line Summary
 
-A log-based alert on a Kubernetes workload was re-scanning the same log data **1,440 times per day** due to three compounding architectural anti-patterns. A structured FinOps review and query re-architecture reduced DDU consumption by **65–75%** — with zero reduction in alerting coverage or accuracy.
+A log-based alert on a Kubernetes workload was re-scanning the same log data **1,440 times per day** due to three compounding architectural anti-patterns. A structured FinOps review and query re-architecture reduced query cost by **65–75%** — with zero reduction in alerting coverage or accuracy.
+
+> **Pricing model note:** Dynatrace Grail (Log Management and Analytics) charges for log alerting under the DPS Query model — **cost = GiB scanned × rate card** (published rate: $0.0035/GiB scanned; DDU weight: 1.70 DDU/GB). Log Metrics are billed for **Ingest & Process only — Query is not billed**. Sources: [docs.dynatrace.com — LMA Query](https://docs.dynatrace.com/docs/license/capabilities/log-analytics/dps-log-query) · [Metrics powered by Grail](https://docs.dynatrace.com/docs/license/capabilities/metrics/dps-metrics-query)
 
 ---
 
@@ -14,12 +16,13 @@ A log-based alert on a Kubernetes workload was re-scanning the same log data **1
 
 | Metric | Value |
 |--------|-------|
-| DDU cost reduction | **65–75%** |
+| Query cost reduction (Grail DPS model) | **65–75%** |
 | Repeated log scans eliminated | **~80% of total scan volume** |
 | Daily evaluation cycles removed | **1,440 full re-scans/day** |
 | Alert accuracy compromised | **None** |
 | Davis AI correlation enabled | **Yes** (was absent before) |
 | Maintenance window suppression | **Now works** (was ignored before) |
+| Log Metric query billing | **Zero** — Ingest & Process only, not billed for Query |
 
 ---
 
@@ -72,30 +75,43 @@ Getting the alert right is not just technical correctness — it is **business c
 > **FinOps Principle: Cost Visibility Before Optimisation.**
 > You cannot reduce what you have not measured. Before rewriting a single line of DQL, decompose the cost model.
 
-### How Dynatrace Log Alerting Consumes DDUs
+### Dynatrace Log Alerting Cost Models — Know Which One You Are On
 
-Dynatrace licensing for log-based alerting is denominated in **Davis Data Units (DDUs)**. Every time a DQL alert query executes, it consumes DDUs proportional to the **volume of log data scanned**.
+Dynatrace has two distinct pricing models for log-based alerting depending on your environment. Both are affected by this case study's patterns — but in different ways.
+
+**Model A — Log Monitoring Classic (DDU-based)**
+Each log record ingested consumes **0.0005 DDU**. This is an ingest cost — fixed regardless of how many times you query. DQL alert queries that re-scan logs add query overhead on top.
+
+**Model B — Log Management and Analytics / Grail (DPS Query-based)**
+Query cost = **GiB of uncompressed data scanned × rate card**.
+- Published rate: **$0.0035 per GiB scanned**
+- DDU equivalent weight: **1.70 DDU per GB read**
+- Source: [docs.dynatrace.com — Log Management and Analytics](https://docs.dynatrace.com/docs/license/capabilities/log-analytics/dps-log-query)
+
+> **This case study addresses Model B** — the Grail DPS query model — because that is where DQL alert query patterns have the largest cost impact. Every time a DQL alert executes, it scans GiB of log data. The cost compounds directly with evaluation frequency.
 
 ```
-Daily DDU Cost = Log Volume per Scan × Evaluation Cycles per Day
+Daily Query Cost = GiB Scanned per Execution × Evaluation Cycles per Day × Rate
 
 Example — 1-minute evaluation, 5-minute lookback window:
-  → 1,440 evaluation cycles per day
+  → 1,440 evaluation cycles per day  (24 × 60)
   → Each cycle re-scans the last 5 minutes of logs
   → Same log record is read ~5 times per day on average
-  → Effective DDU multiplier: 5× on raw log volume
+  → Effective cost multiplier: 5× on raw log volume scanned
 ```
+
+**Key verified fact:** `fetch logs | makeTimeseries count()` is explicitly billed as Log Management & Analytics – Query (GiB scanned). Source: [docs.dynatrace.com — Metrics powered by Grail - Query](https://docs.dynatrace.com/docs/license/capabilities/metrics/dps-metrics-query): *"queries involving maketimeseries result in consumption based on GiB of data read during DQL query execution."*
 
 ### The Four Cost Drivers in the Original Query
 
-| Driver | The Problem | DDU Impact |
-|--------|-------------|-----------|
-| `scanLimitGBytes:-1` | Overrides the 500GB default cap — scans ALL data with no ceiling | Maximum possible per cycle — no budget guardrail whatsoever |
-| `matchesPhrase()` on structured fields | Phrase-tokenised search on indexed dimensional attributes | +15–25% CPU/IO overhead per scan |
+| Driver | The Problem | Query Cost Impact |
+|--------|-------------|-------------------|
+| `scanLimitGBytes:-1` | Overrides the 500GB default cap — scans ALL data with no ceiling | Maximum GiB scanned per cycle — no budget guardrail whatsoever |
+| `matchesPhrase()` on structured fields | Phrase-tokenised search on indexed dimensional attributes | +15–25% CPU/IO overhead per scan — more data touched |
 | `lookup []` MZ join in query | Cross-store join: log store + entity topology, every cycle | +20–30% overhead per cycle |
 | 1-minute evaluation loop | 1,440 complete re-scans per day | Multiplies all above costs ×1,440 |
 
-> **Note on `scanLimitGBytes`:** The Dynatrace default (when the parameter is omitted entirely) is **500GB** — not unlimited. Setting `-1` explicitly overrides even that safety cap, removing all budget guardrails. This is the most dangerous anti-pattern because it silently allows unbounded DDU consumption on high-volume log streams.
+> **Note on `scanLimitGBytes`:** The Dynatrace default (when the parameter is omitted entirely) is **500GB** — not unlimited. Setting `-1` explicitly overrides even that safety cap. Source: [docs.dynatrace.com — DQL data source commands](https://docs.dynatrace.com/docs/discover-dynatrace/platform/grail/dynatrace-query-language/commands/data-source-commands)
 
 ---
 
@@ -227,8 +243,10 @@ Log Metric — execution model:
     → Metric data point stored in metric store
 
   Alert engine evaluates the pre-aggregated metric — ZERO log scanning
-  DDU cost = metric storage only (orders of magnitude cheaper)
+  Cost = Ingest & Process only — Query is NOT billed for Log Metrics
 ```
+
+> **Verified:** *"Log metrics are regular metrics that are billed for Ingest & Process (and Retain above 15 months), but not for Query."* — [docs.dynatrace.com — Metrics powered by Grail - Query](https://docs.dynatrace.com/docs/license/capabilities/metrics/dps-metrics-query)
 
 ### Log Metric Configuration
 
@@ -305,14 +323,14 @@ You do not need to name a field `dt_source_entity`. You need the **value** to be
 
 See [`cost_analysis.md`](./cost_analysis.md) for detailed modelling.
 
-### DDU Reduction Per Change
+### Query Cost Reduction Per Change
 
-| Change | Mechanism | Estimated DDU Reduction |
+| Change | Mechanism | Estimated Reduction |
 |--------|-----------|------------------------|
-| `matchesPhrase` → exact `==` | Index lookup vs full-text scan | 15–25% per cycle |
-| Remove `lookup` MZ join | Eliminates cross-store join | 20–30% per cycle |
-| `scanLimitGBytes` cap | Hard 1GB guardrail | 10–20% on high-volume streams |
-| Log Metric architecture | Ingest-time evaluation vs repeated scan | **60–80% of total log alert DDU** |
+| `matchesPhrase` → exact `==` | Index lookup vs full-text scan — less data touched per cycle | 15–25% per cycle |
+| Remove `lookup` MZ join | Eliminates cross-store join — reduces scan scope | 20–30% per cycle |
+| `scanLimitGBytes` cap | Hard 1GB guardrail — enforces budget ceiling | 10–20% on high-volume streams |
+| Log Metric architecture | Ingest-time evaluation — Query not billed at all | **60–80% of total query cost** |
 | **All changes combined** | Compound effect | **65–75% total reduction** |
 
 ### Scenario Modelling
@@ -327,7 +345,7 @@ See [`cost_analysis.md`](./cost_analysis.md) for detailed modelling.
 
 In a managed or multi-tenant Dynatrace environment, this is not a one-alert saving. Every container error rate alert using the DQL log alert pattern instead of Log Metrics is incurring the same repeated-scan cost.
 
-**The FinOps leverage point:** standardise on Log Metrics for all container error rate alerts across the estate. The DDU saving is not additive — it compounds across every similar alert pattern deployed at scale.
+**The FinOps leverage point:** standardise on Log Metrics for all container error rate alerts across the estate. Because Log Metrics are not billed for Query, every DQL log alert converted to a Log Metric eliminates its scan cost entirely — not just reduces it. The saving compounds across every similar alert pattern deployed at scale.
 
 ---
 
@@ -347,7 +365,7 @@ In a managed or multi-tenant Dynatrace environment, this is not a one-alert savi
 ## 9. Key Takeaways for Platform Architects
 
 **1. Cost visibility is the first design step — not an afterthought.**
-Before writing any alert query, model the DDU cost: volume × frequency × multiplier. Know what each DQL operator costs at scale.
+Before writing any alert query, identify your pricing model (DDU Classic vs Grail DPS Query) and model the cost: GiB scanned × evaluation frequency × lookback multiplier. Published Grail query rate: $0.0035/GiB scanned. Know what each DQL operator costs at scale before you write it.
 
 **2. Know your filter operators — `matchesPhrase()` is not a general-purpose filter.**
 
@@ -368,10 +386,10 @@ Every production alert must include a `dt.entity.*` dimension in `makeTimeseries
 Per official Dynatrace documentation, alert DQL queries must not use `from:`, `to:`, `sort`, or `limit`. Do not override the timeframe — the alert engine manages its own sliding window. `interval: 1m` is required for Anomaly Detection alerts to function correctly.
 
 **5. Log Metrics is the production alerting architecture. DQL log alerts are for exploration.**
-The Log Metric pattern — evaluate once at ingest, alert on the pre-aggregated metric — eliminates the repeated-scan cost model structurally, not incrementally.
+Verified: Log Metrics are billed for Ingest & Process only — Query is not billed. DQL log alerts are billed per GiB scanned on every evaluation cycle. The scan loop is the entire cost difference. Eliminate it structurally — don't just make each scan cheaper.
 
 **6. Architecture decisions at the pattern level multiply across the fleet.**
-A single query optimisation saves DDUs on one alert. A pattern decision — standardise on Log Metrics — saves DDUs across every similar alert in the estate. That is the FinOps leverage point.
+One query fix saves query cost on one alert. A pattern decision — standardise on Log Metrics for all container error rate alerts — eliminates scan cost across every similar alert in the estate. That is the FinOps leverage point.
 
 ---
 
@@ -383,9 +401,10 @@ A single query optimisation saves DDUs on one alert. A pattern decision — stan
 | [`query_v1.dql`](./query_v1.dql) | Original query with anti-patterns annotated inline |
 | [`query_v2.dql`](./query_v2.dql) | Optimised query with fix annotations inline |
 | [`log_metric_config.md`](./log_metric_config.md) | Log Metric definition spec and alert configuration |
-| [`cost_analysis.md`](./cost_analysis.md) | Full DDU cost breakdown and scenario modelling |
+| [`cost_analysis.md`](./cost_analysis.md) | Full query cost breakdown, pricing model reference, and scenario modelling |
 
 ---
 
 *Part of the [DQL Cookbook](../../README.md) — real-world Dynatrace Grail patterns from enterprise-scale operations.*
+*Repository: [github.com/niladrimondal-obs/observability-toolkit/tree/main/dynatrace-dql-cookbook](https://github.com/niladrimondal-obs/observability-toolkit/tree/main/dynatrace-dql-cookbook)*
 *Pattern generalised from enterprise deployments. No client-specific data included.*

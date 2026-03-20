@@ -34,7 +34,7 @@ dynatrace-dql-cookbook/
 │       ├── query_v1.dql                 ← Original query with anti-patterns annotated
 │       ├── query_v2.dql                 ← Optimised query
 │       ├── log_metric_config.md         ← Log Metric definition spec
-│       └── cost_analysis.md             ← DDU reduction breakdown
+│       └── cost_analysis.md             ← Query cost breakdown and scenario modelling
 │
 ├── metrics/                             ← Coming soon
 ├── entity-binding/                      ← Coming soon
@@ -45,9 +45,11 @@ dynatrace-dql-cookbook/
 
 ## Case Studies
 
-| # | Case | Domain | DDU Saving | Key Pattern |
-|---|------|--------|-----------|-------------|
-| 01 | [SonarQube DCE Error Rate Alert](./log-alerting/sonarqube-dce-error-rate/README.md) | Log Alerting | 65–75% | Log Metrics vs repeated log scans |
+| # | Case | Domain | Cost Saving | Key Pattern |
+|---|------|--------|-------------|-------------|
+| 01 | [SonarQube DCE Error Rate Alert](./log-alerting/sonarqube-dce-error-rate/README.md) | Log Alerting | 65–75% query cost | Log Metrics vs repeated log scans |
+
+> **Pricing model note:** All cost analysis in this cookbook is verified against official Dynatrace documentation. For Grail / Log Management and Analytics (DPS model): query cost = GiB scanned × rate card (published: $0.0035/GiB). Log Metrics are billed for Ingest & Process only — Query is not billed. Sources linked inline in each case study.
 
 ---
 
@@ -68,4 +70,6 @@ dynatrace-dql-cookbook/
 
 ---
 
-> If this helped you reduce DDU spend or improve your alerting architecture, a ⭐ on the repo is appreciated.
+> If this helped you reduce query spend or improve your alerting architecture, a ⭐ on the repo is appreciated.
+>
+> **Repository:** [github.com/niladrimondal-obs/observability-toolkit/tree/main/dynatrace-dql-cookbook](https://github.com/niladrimondal-obs/observability-toolkit/tree/main/dynatrace-dql-cookbook)

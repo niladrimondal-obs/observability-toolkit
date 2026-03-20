@@ -1,0 +1,145 @@
+// ============================================================
+// query_v1.dql  —  ORIGINAL QUERY (Anti-Pattern Reference)
+// Case Study: SonarQube DCE Error Rate Alert
+// DQL Cookbook — log-alerting/sonarqube-dce-error-rate
+// ============================================================
+//
+// PURPOSE: This is the BEFORE state. It works — but it is
+// expensive. Three compounding anti-patterns drive DDU cost
+// to 5× what it needs to be at 1-minute evaluation frequency.
+//
+// DO NOT deploy this pattern in production alerting.
+// Use query_v2.dql or the Log Metric architecture instead.
+// ============================================================
+
+
+// ❌ ANTI-PATTERN 1: Unbounded scan limit
+// ─────────────────────────────────────────────────────────────
+// scanLimitGBytes:-1 means no cap on how much log data
+// this query will scan per evaluation cycle.
+//
+// At 1-minute evaluation frequency, this executes 1,440
+// times per day — each time scanning without a budget ceiling.
+//
+// Fix: scanLimitGBytes:1  (set a hard cap appropriate to your
+//      log volume; if the cap is hit, partial results still
+//      fire the alert — the volume spike IS the anomaly)
+// ─────────────────────────────────────────────────────────────
+fetch logs, scanLimitGBytes:-1
+
+
+// ❌ ANTI-PATTERN 2: matchesPhrase() on structured fields
+// ─────────────────────────────────────────────────────────────
+// matchesPhrase() performs full-text tokenised search.
+// This is the right operator for unstructured log body content:
+//   | filter matchesPhrase(content, "NullPointerException")
+//
+// It is the WRONG operator for structured dimensional fields
+// like k8s.cluster.name, k8s.container.name, and status.
+// These fields are indexed. Exact equality (==) uses that
+// index directly — matchesPhrase ignores it and does a
+// full tokenised phrase scan instead.
+//
+// Cost: +15–25% CPU and I/O overhead per evaluation cycle,
+//       multiplied by 1,440 cycles per day.
+//
+// Choose the right operator for structured fields:
+//   ==             → exact match, case-sensitive, fastest
+//   matchesValue() → case-insensitive, supports wildcards (*), multi-value arrays
+//   matchesPhrase() → phrase search, for unstructured content field ONLY
+//
+// For cluster name, container name, status:
+//   Use == when values are known exactly and case is consistent
+//   Use matchesValue() when you need case-insensitivity or wildcard patterns
+// ─────────────────────────────────────────────────────────────
+| filter matchesPhrase(k8s.cluster.name, "my-kubernetes-cluster")
+    AND matchesPhrase(status, "ERROR")
+    AND (
+        matchesPhrase(k8s.container.name, "sonarqube-dce")
+        OR matchesPhrase(k8s.container.name, "sonarqube-dce-search")
+    )
+
+
+// ❌ ANTI-PATTERN 3: Cross-store lookup join inside the query
+// ─────────────────────────────────────────────────────────────
+// This lookup fetches the ENTIRE dt.entity.kubernetes_cluster
+// entity set, expands its managementZones array, and joins it
+// against the log results — on every single evaluation cycle.
+//
+// Note on expand + filter:
+//   managementZones is an array field on the entity.
+//   The expand command unnests it into individual rows so that
+//   each row has a single MZ string value.
+//   After expand, the == filter works correctly against each
+//   individual string value — without expand, array matching
+//   would require iContains() or similar, not ==.
+//   The syntax here is correct but expensive.
+//
+// At 1-minute frequency: 1,440 topology table fetches per day.
+// This is a cross-store operation: log store + entity store.
+// It is the most expensive part of this query.
+//
+// The management zone filter is valid and necessary — but
+// it does not need to live in the query. Dynatrace alert
+// definitions support native MZ scoping at zero join cost.
+//
+// Fix: move MZ enforcement to the alert definition level.
+//      The lookup block can be removed entirely.
+// ─────────────────────────────────────────────────────────────
+| lookup [
+    fetch dt.entity.kubernetes_cluster
+    | expand managementZones
+  ], lookupField:id, sourceField:dt.entity.kubernetes_cluster, prefix:"mz."
+
+| filter mz.managementZones == "MY_MANAGEMENT_ZONE"
+
+
+// ❌ ANTI-PATTERN 4: makeTimeseries with no entity binding
+// ─────────────────────────────────────────────────────────────
+// This timeseries has no dt.entity.* dimension in by:{}.
+//
+// Consequence: when this query powers a Metric Event alert,
+// the resulting problem card is ORPHANED — it has no entity
+// owner in the Dynatrace topology model.
+//
+// What breaks silently:
+//   • Davis AI cannot correlate this alert with infrastructure
+//     events (node pressure, storage issues, network problems)
+//   • Maintenance windows scheduled against the Kubernetes
+//     cluster entity DO NOT suppress this alert
+//   • Management zone access control is not enforced
+//   • Ownership routing cannot resolve a responsible team
+//   • The alert does not appear on the entity's event timeline
+//
+// Fix: add dt.entity.kubernetes_cluster to the by:{} grouping.
+//      The alert engine detects the entity ID format (TYPE-HEXID)
+//      in the dimension value and auto-promotes it to
+//      dt_source_entity — no explicit declaration required.
+// ─────────────────────────────────────────────────────────────
+| makeTimeseries count(),
+    time:{timestamp},
+    by:{k8s.cluster.name, k8s.container.name},
+    interval:1m
+
+
+// ============================================================
+// SUMMARY OF ISSUES
+// ============================================================
+//
+// Anti-Pattern          | DDU Impact
+// ──────────────────────┼────────────────────────────────────
+// scanLimitGBytes:-1    | Overrides 500GB default cap — unbounded scan
+// matchesPhrase ×3      | +15–25% overhead per cycle
+// lookup MZ join        | +20–30% overhead per cycle
+// No entity binding     | Operational failures (not DDU cost)
+// All combined @ 1min   | ~5× effective DDU vs optimal pattern
+//
+// ADDITIONAL ALERT DQL RULES (from Dynatrace Anomaly Detection docs):
+//   • Do NOT use from: or to: in alert DQL queries — causes evaluation failures
+//   • Do NOT use sort in alert DQL — reduces performance with no benefit
+//   • Do NOT use limit — causes dimensions to appear/disappear unpredictably
+//   • interval: 1m is REQUIRED for Anomaly Detection alerts
+//
+// See cost_analysis.md for full breakdown.
+// See query_v2.dql for the optimised version.
+// ============================================================
